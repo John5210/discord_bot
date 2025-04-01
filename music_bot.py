@@ -1,4 +1,6 @@
 import os
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
@@ -20,6 +22,11 @@ bot = commands.Bot(command_prefix="*", intents=intents)
 loop_enabled = False # Global looping default
 current_song = None # Setting current song to none for looping
 
+# Setting up Spotify credentials
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET")
+))
 # Adding the ability to queue songs
 song_queue = deque()
 
@@ -53,25 +60,42 @@ async def join(ctx):
     else:
         await ctx.send("Join a voice channel to begin")
 
+        
 @bot.command(name="play")
 async def play(ctx, *, query: str):
-    """Adds song to the queue, or plays it if the queue is empty"""
-    global current_song
-
+    """Plays a song from YouTube or Spotify"""
+    
     if ctx.voice_client is None:
         await ctx.invoke(bot.get_command("join"))
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'noplaylist': True,
-        'default_search': 'ytsearch',  # Enables YouTube search
-    }
+    # Check if the query is a Spotify link
+    if "open.spotify.com/playlist" in query:
+        playlist_id = query.split("/")[-1].split("?")[0]  # Extract playlist ID
+        tracks = sp.playlist_tracks(playlist_id)["items"]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        for track in tracks:
+            track_name = track["track"]["name"]
+            artist_name = track["track"]["artists"][0]["name"]
+            search_query = f"{track_name} {artist_name}"
+            
+            with yt_dlp.YoutubeDL({'format': 'bestaudio', 'quiet': True, 'noplaylist': True, 'default_search': 'ytsearch'}) as ydl:
+                try:
+                    info = ydl.extract_info(search_query, download=False)
+                    video = info['entries'][0] if 'entries' in info else info
+                    url2 = video['url']
+                    title = video['title']
+                    song_queue.append((url2, title))
+                    await ctx.send(f"Added to queue: {title}")
+                except Exception as e:
+                    await ctx.send(f"Error fetching video for {search_query}: {e}")
+
+        return
+
+    # Normal YouTube search
+    with yt_dlp.YoutubeDL({'format': 'bestaudio', 'quiet': True, 'noplaylist': True, 'default_search': 'ytsearch'}) as ydl:
         try:
             info = ydl.extract_info(query, download=False)
-            video = info['entries'][0] if 'entries' in info else info  # Handles both searching and direct links
+            video = info['entries'][0] if 'entries' in info else info
             url2 = video['url']
             title = video['title']
         except Exception as e:
@@ -79,14 +103,12 @@ async def play(ctx, *, query: str):
             return
 
     vc = ctx.voice_client
-    current_song = url2  # Store song URL for looping
-
+    
     if vc.is_playing() or vc.is_paused():
         song_queue.append((url2, title))
         await ctx.send(f"Added to queue: {title}")
     else:
-        ffmpeg_options = {'options': '-vn'}
-        vc.play(discord.FFmpegPCMAudio(url2, **ffmpeg_options), after=lambda e: play_next(vc))
+        vc.play(discord.FFmpegPCMAudio(url2, options='-vn'), after=lambda e: play_next(vc))
         await ctx.send(f"Now playing: {title}")
 
 @bot.command(name="queue")
